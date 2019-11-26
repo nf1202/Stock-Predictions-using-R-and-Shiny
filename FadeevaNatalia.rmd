@@ -1,0 +1,240 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, include=FALSE, comment=NA,fig.keep='all', fig.width=7, fig.height=5)
+
+# Creating a vector of packages used within.
+packages <- c('readxl',
+              'lubridate',
+              'ggplot2',
+              'tidyverse',
+              'dplyr')
+# Checking for package installations on the system and installing if not found.
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())))  
+}
+# Including the packages for use.
+for(package in packages){
+  library(package, character.only = TRUE)
+}
+```
+---
+title: "Exploratory Analysis of the Houston Police Department Data Set"
+author: "by Natalia Fadeeva"
+date: "8/16/2019"
+output: html_document
+---
+
+
+### Part 1: Data Preparation
+
+```{r import}
+setwd("~/Module 2/Data Mining in R/FadeevaNatalia")
+file.list <- list.files(pattern='*.xlsx')
+df.list <- lapply(file.list, read_excel, skip = 11)
+```
+Steps below were undertaken to collect and pre-process data for the analysis:
+
+1. Accessed crime statistics data by street / neighborhood (police beat) for five months (January - May 2019) from the Houston Police website: http://www.houstontx.gov/police/cs/stats2.htm
+
+2. Merged monthly data from individual Excel spreadsheet. The outcome was a data frame with 101,642 observations. Added "id" column to map records to their original file.
+    
+3. Removed columns with all "NA" values.These resulted from the merged columns in the original monthly Excel files.
+    
+4. Removed variables with large volume of missing values:
+    * Zip column: January, February and March records did not contain Zip code values
+    * Deemed unnecessarily large effort to replicate Zip data using April and May values
+    * Suffix and Street Type columns: large number of missing values
+    * Deemed not critical for the analysis
+    * Dataset was reduced to 9 variables:
+      + ID
+      + Occurrence Date
+      + Occurrence Hour
+      + NIBRS Description
+      + Offense Count
+      + Beat
+      + Premise
+      + Block Range
+      + Street Name
+      
+5. Removed 498 records (~0.5% of data) with incomplete (NA) values. Most of the “information” on the Houston crime problem is expressed in the resulting complete dataset with 101,144 records.
+
+```{r bind}
+df <- bind_rows(df.list, .id = "id")
+df[sapply(df, function(x) all(is.na(x)))] <- NULL
+str(df)
+df2 <- df[c(1:9)]
+str(df2)
+df3 <- df2[complete.cases(df2), ]
+str(df3)
+```
+6. Changed data type of the variables to ease data manipulation
+    * Converted categorical variables from character to factor class
+    * Converted "Occurrence Date" to date class
+    
+7. Added Day of the Week and Month variables to the dataset to be used in the analysis.
+
+```{r char to factor}
+df4 <- mutate_if(df3, is.character, as.factor)
+df4$`Occurrence Date`<-ymd(df4$`Occurrence Date`)
+df4$WeekDay<-wday(df4$`Occurrence Date`)
+df4$nWeekDay<-wday(df4$`Occurrence Date`,label=TRUE)
+df4$Month<-month(df4$`Occurrence Date`,label=TRUE)
+#str(df4)
+```
+
+
+### Part 2: Outcomes of the Exploratory Analysis of the Data
+ 
+**Distribution of Offenses per Crime Occurrence**
+
+As we can see from the boxplot below, the median number of offenses per crime occurrence was 1 across the five months of data analyzed. We can notice outliers at the higher extremes. The highest crime occurrence was recorded in March 2019, with 10 offenses.
+
+```{r eval==FALSE, include=TRUE, echo=FALSE} 
+#boxplots by month
+boxplot(df4$`Offense Count`~df4$id,
+data=df4,
+horizontal=TRUE,
+main="Boxplot - Offense Count per Occurrence in Houston, by Month",
+xlab="Number of Offenses",
+ylab="Month Number, 2019",
+col="orange",
+border="brown"
+)
+```
+
+
+**Breakdown of Offenses by Month**
+
+By comparing the number of crime occurrences across five months, we see that offenses were below the 20,000 mark in January, dropped in February, but then got on the upward swing in March, which continued into April with the highest number of crimes occurring in May.
+
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+#length(unique(df4$`NIBRS Description`))
+qplot(df4$`Month`, xlab="Month, 2019", main = "Crimes in Houston by Month, 2019") + scale_y_continuous ("Number of Crimes")
+```
+
+**Breakdown of Offenses by Day of Week**
+
+By looking at the day of week groupings, we can see that more crimes occurred on Wednesday than on other days of the week during the five-month data period.
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+qplot(df4$nWeekDay, xlab="Day of Week", main = "Crimes in Houston by Day of Week, Jan - May 2019") + scale_y_continuous ("Number of Crimes")
+```
+
+**Breakdown of Offenses by Time of Day**
+
+By overlaying the number of crimes against the time of day data, we can that the highest number of crime occurrences (over 6,000) took place at around the 6PM time window, followed by the 12 PM time period.
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+qplot(df4$`Occurrence Hour`, xlab="Time of Day", main = "Crimes in Houston by Time of Day, Jan - May 2019") + scale_y_continuous ("Number of Crimes")
+```
+
+**Crime Dimension - Specific Crime Types**
+
+After summarizing crimes by NIBRS Description, we see 59 crime types, not all of which are mutually exclusive:
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+
+crimes <- data.frame(table(df4$`NIBRS Description`))
+sumcrimes <- format(sum(crimes$Freq), big.mark=",")
+crimes
+#sumcrimes
+```
+
+Consolidation of similar crime categories into 12 buckets below allows for more straightforward crime analysis. 
+
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+
+df4$crime <- as.character(df4$`NIBRS Description`)
+df4$crime <- ifelse(df4$`NIBRS Description` %in% c("Pornographs, obscene material", "Prostitution", "Statutory rape", "Purchasing prostitution", "Forcible rape", "Forcible sodomy", "Assisting or promoting prostitution", "Forcible fondling", "Human Trafficking/Commercial Sex Act", "Peeping tom"), 
+                    'SEX', df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Motor vehicle theft", "Theft from motor vehicle", "Theft of motor vehicle parts or accessory"),
+                    "MVT", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Family offenses, no violence", "Betting/wagering","Gambling equipment violations","From coin-operated machine or device", "Promoting gambling", "Liquor law violations", "Intimidation","Runaway", "Curfew, loitering, vagrancy violations", "Disorderly conduct", "Driving under the influence", "Drunkenness"), 
+                    "NONVIO", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Aggravated Assault", "Simple assault"), 
+                    "ASSAULT", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Drug, narcotic violations", "Drug equipment violations"),
+                    "DRUG", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Weapon law violations", "Kidnapping, abduction", "Arson", "Destruction, damage, vandalism"),
+                    "VIO", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Negligent manslaughter", "Murder, non-negligent","Justifiable homicide"),
+                    "HOMICIDE", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Bad checks", "Counterfeiting, forgery", "Credit card, ATM fraud", "Embezzlement", "False pretenses, swindle", "Identify theft", "Impersonation", "Wire fraud", "Bribery", "Welfare fraud", "Extortion, Blackmail"),
+                    "FRAUD", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c( "Burglary, Breaking and Entering", "Robbery"),
+                    "ROBBERY/BURGLARY", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Shoplifting", "Theft from building", "Purse-snatching", "Pocket-picking", "Stolen property offenses", "All other larceny", "Stolen property offenses"),
+                    "LARCENY/THEFT", df4$crime)
+
+df4$crime <- ifelse(df4$crime =="Trespass of real property", "TRESPASS", df4$crime)
+
+df4$crime <- ifelse(df4$crime %in% c("Hacking/Computer Invasion", "Animal Cruelty", "All other offenses"), 
+                    "OTHER", df4$crime)
+#table(df4$crime)
+
+# Further combination into violent and non-violent crime types
+df4$crime.type <- ifelse(df4$crime %in% c("SEX", "ASSAULT", "HOMICIDE", "VIO", "ROBBERY/BURGLARY"),        
+                    "VIO", ifelse(df4$crime %in% c("LARCENY/THEFT", "TRESPASS", "DRUG", "FRAUD", "MVT", "NONVIO"),
+                    "NONVIO", "Other"))
+crimes2 <- data.frame(table(df4$crime))
+crimes2
+sumcrimes2 <- format(sum(crimes2$Freq), big.mark=",")
+#sumcrimes2
+```
+Note: We did not have access to the Houston Police Department to confirm these crime groupings. We understand that a different set of crime classifications might be in use by the Houston PD. We feel that the goal of analyzing crime patterns could be fulfilled with the groupings above.
+
+
+**Frequency of Crime**
+
+The chart below shows frequency of crimes by category. Motor Vehicle Theft topped the list of most frequent crime occurrences in January - May 2019, followed by Assault, and Larceny/Theft. Homicides had the lowest occurrence.
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+q<-qplot(df4$crime, xlab = "Crime Category", main ="Crimes in Houston, Jan - May 2019") + 
+  scale_y_continuous("Number of crimes")
+q + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+**Type of Crime**
+
+Further roll up of crime categories into violent and non-violent crime types shows the overall nature of the crimes that were committed in Houston in the first five months in 2019. We can see that most of the crimes had a non-violent nature.
+
+```{r eval=TRUE, include=TRUE, echo=FALSE}
+crimetyp<-data.frame(table(df4$crime.type))
+crimetyp$Percent <- round(ave(crimetyp$Freq,FUN=function(x) 100*x/sum(x)))
+colnames(crimetyp) <- c("Crime Type","Freq","Percent")
+
+sumcrimetyp <- sum(crimetyp$Freq)
+#sumcrimetyp
+crimetyp
+
+```
+
+```{r eval=FALSE, include=FALSE, echo=FALSE}
+#temp <- aggregate(df4$crime, by= list(df4$crime, df4$`Occurrence Hour`), FUN=length)
+#names(temp) <- c("Crime", "Occurrence Hour", "Count")
+#temp$Crime<-as.numeric(temp$Crime)
+
+#ggplot(temp, aes(x=temp$Crime, y=temp$`Occurrence Hour`)) + geom_tile(aes(fill=Count) + #scale_x_discrete("Crime", expand = c(0,0)) + scale_y_discrete("Time of day", expand = c(0,-2)) + #scale_fill_gradient("Number of crimes", low = "white", high = "steelblue") + theme_bw() + ggtitle("Crimes by #time of day") + theme(panel.grid.major=element_line(colour=NA)), panel.grid.minor=element_line (colour = NA)) 
+```
+
+
+### Summary
+
+We analyzed Houston Police data by comparing number of crime occurrences by month, day of the week, time of day, the type and frequency of crime. 
+
+The Houston Police Department does not recommend raw data comparisons be made between police beats. The web site https://www.houstontx.gov/police/cs/Monthly_Crime_Data_by_Street_and_Police_Beat.htm does not provide a comparative analysis of the various beats, thus beat-level analysis was excluded from our report.
+
+Premise and Street / Block were not in scope for this deliverable but could be included in the next iteration of the report.
+
