@@ -1,0 +1,434 @@
+---
+title: 'MSBA Data Mining in R: Post-Module 2 <br>Assignment 5'
+author: "Study Group 3: Andres Aybar, Jacob Boysen, Natalia Fadeeva, Mariana Fanous"
+date: "September 22, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r Setup, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+
+# Creating a vector of packages used within
+packages <- c('readr',
+              'xts',
+              'DMwR2',
+              'quantmod',
+              'TTR',
+              'performanceEstimation',
+              'nnet',
+              'e1071',
+              'earth',
+              'randomForest',
+              'kernlab',
+              'RQuantLib'
+              )
+
+# Checking for package installations on the system and installing if not found
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())))  
+}
+
+# Including the packages for use
+for(package in packages){
+  library(package, character.only = TRUE)
+}
+```
+
+##We obtain selected stocks data.
+```{r Obtain Stock Data, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+
+#Select from AAPL, MSFT, FB, GS, GOOGL
+ticker <- "GS"
+
+s.date <-as.Date("2017-01-01")
+e.date <-as.Date(Sys.Date())
+dat <- getSymbols(ticker,from = s.date, to = e.date, auto.assign=FALSE)
+
+#rename the variables
+names(dat) <- c("p.open","p.high","p.low","p.close","volume","p.adj")
+```
+
+##We observe selected stocks performance.
+```{r Plot Stocks, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+xts::plot.xts(as.xts(Cl(dat)))
+```
+
+##We define Closing Price of the Stock as the Predictive Task.
+##We calculate relevant statistics on the recent evolution of the stock prices using technical indicators from the TTR package to choose predictors.
+```{r Choose Predictors, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+myATR         <- function(x) ATR(HLC(x))[,'atr'] # Average True Range, measures volatility of series  
+mySMI         <- function(x) SMI(HLC(x))[, "SMI"] #  Stochastic Momentum Index 
+myADX         <- function(x) ADX(HLC(x))[,'ADX'] # Welles Wilder's Directional Movement Index 
+myAroon       <- function(x) aroon(cbind(Hi(x),Lo(x)))$oscillator # Identify starting trends
+myBB          <- function(x) BBands(HLC(x))[, "pctB"] # Bollinger Bands
+myChaikinVol  <- function(x) Delt(chaikinVolatility(cbind(Hi(x),Lo(x))))[, 1] # Chaikin Volatility
+myCLV         <- function(x) EMA(CLV(HLC(x)))[, 1] # Close Location Value 
+myEMV         <- function(x) EMV(cbind(Hi(x),Lo(x)),Vo(x))[,2] # Arms' Ease of Movement Value 
+myMACD        <- function(x) MACD(Cl(x))[,2] # Moving Average Convergence Divergence
+myMFI         <- function(x) MFI(HLC(x), Vo(x)) # Money Flow Index
+mySAR         <- function(x) SAR(cbind(Hi(x),Cl(x))) [,1] # Parabolic Stop-and-Reverse
+myVolat       <- function(x) volatility(OHLC(x),calc="garman")[,1] # volatility
+```
+
+##We retrieve the data for Closing Price of the Stock
+```{r Initial Data Model, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+data.retrieve <- specifyModel(Cl(dat) ~ myATR(dat) + 
+                             mySMI(dat) + 
+                             myADX(dat) + 
+                             myAroon(dat) + 
+                             myBB(dat) + 
+                             myChaikinVol(dat) + 
+                             myCLV(dat) + 
+                             CMO(Cl(dat)) + 
+                             EMA(Delt(Cl(dat))) + 
+                             myEMV(dat) + 
+                             myVolat(dat) + 
+                             myMACD(dat) + 
+                             myMFI(dat) + 
+                             RSI(Cl(dat)) + 
+                             mySAR(dat) + 
+                             runMean(Cl(dat)) + 
+                             runSD(Cl(dat)))
+set.seed(1234) 
+```
+
+##We apply Random Forest to the data model to estimate the importance of the variables involved in a prediction task. 
+```{r Identify Variables for Data Model Use, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+rf <- buildModel(data.retrieve,method='randomForest', 
+                 training.per=c("2017-01-01","2018-12-31"), 
+                 ntree=1000, 
+                 importance=TRUE) 
+varImpPlot(rf@fitted.model, type = 1) 
+```
+
+##We determine the importance of the variables by calculating the percentage increase in the error of the random forest as we remove each variable. We use 19 as a threshold as there seems to be a difference in the scores below and above this value.
+```{r Data Model Variable Selection, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+imp <- importance(rf@fitted.model, type = 1) 
+rownames(imp)[which(imp > 19)] 
+```
+
+##We create data frames based on the technical indicators for each stock to store the previous stock prices.
+##Due to the nature of data frames, we eliminate any technical indicators that produce ranges.
+```{r Optimized Data Model, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+
+if (ticker == "AAPL") {
+  data.model <- as.data.frame(getSymbols(ticker, from = "2017-01-01", env = NULL))
+  
+  #data.model$myATR <- myATR(data.model)
+  #data.model$myBB <- myBB(data.model)
+  data.model$EMA.Delt <- EMA(Delt(Cl(data.model)))
+  data.model$RSI <- RSI(Cl(data.model))
+  data.model$mySAR <- mySAR(data.model)
+  data.model$runMean <- runMean(Cl(data.model))
+  
+  data.model$Close <- data.model[,4]
+  data.model <- na.omit(data.model)
+  data.model <- data.model[,c(7:ncol(data.model))]
+
+} else if (ticker == "MSFT") {
+  data.model <- as.data.frame(getSymbols(ticker, from = "2017-01-01", env = NULL))
+  
+  #data.model$myATR <- myATR(data.model)
+  #data.model$myADX <- myADX(data.model)
+  #data.model$myBB <- myBB(data.model)
+  data.model$EMA.Delt <- EMA(Delt(Cl(data.model)))
+  data.model$RSI <- RSI(Cl(data.model))
+  data.model$mySAR <- mySAR(data.model)
+  data.model$runMean <- runMean(Cl(data.model))
+  
+  data.model$Close <- data.model[,4]
+  data.model <- na.omit(data.model)
+  data.model <- data.model[,c(7:ncol(data.model))]
+ 
+} else if (ticker == "FB") {
+  data.model <- as.data.frame(getSymbols(ticker, from = "2017-01-01", env = NULL))
+  
+  #data.model$myAroon <- myAroon(data.model)
+  #data.model$myBB <- myBB(data.model)
+  data.model$EMA.Delt <- EMA(Delt(Cl(data.model)))
+  data.model$myEMV <- myEMV(data.model)
+  data.model$myMACD <- myMACD(data.model)
+  data.model$RSI <- RSI(Cl(data.model))
+  data.model$mySAR <- mySAR(data.model)
+  data.model$runMean <- runMean(Cl(data.model))
+  
+  data.model$Close <- data.model[,4]
+  data.model <- na.omit(data.model)
+  data.model <- data.model[,c(7:ncol(data.model))]
+
+} else if (ticker == "GS") {
+  data.model <- as.data.frame(getSymbols(ticker, from = "2017-01-01", env = NULL))
+  
+  #data.model$myATR <- myATR(data.model)
+  #data.model$myBB <- myBB(data.model)
+  data.model$EMA.Delt <- EMA(Delt(Cl(data.model)))
+  data.model$myEMV <- myEMV(data.model)
+  data.model$myVolat <- myVolat(data.model)
+  data.model$myMACD <- myMACD(data.model)
+  data.model$RSI <- RSI(Cl(data.model))
+  data.model$mySAR <- mySAR(data.model)
+  data.model$runMean <- runMean(Cl(data.model))
+  
+  data.model$Close <- data.model[,4]
+  data.model <- na.omit(data.model)
+  data.model <- data.model[,c(7:ncol(data.model))]
+ 
+ } else { #GOOGL
+   data.model <- as.data.frame(getSymbols(ticker, from = "2017-01-01", env = NULL))
+  
+  #data.model$myATR <- myATR(data.model)
+  #data.model$myADX <- myADX(data.model)
+  data.model$EMA.Delt <- EMA(Delt(Cl(data.model)))
+  data.model$myMACD <- myMACD(data.model)
+  data.model$RSI <- RSI(Cl(data.model))
+  data.model$mySAR <- mySAR(data.model)
+  data.model$runMean <- runMean(Cl(data.model))
+  
+  data.model$Close <- data.model[,4]
+  data.model <- na.omit(data.model)
+  data.model <- data.model[,c(7:ncol(data.model))]
+ 
+ }
+
+data.model
+
+```
+
+
+
+
+##Prediction Tasks
+```{r Training Data Creation, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+#Below are the training set, evaluation set and the formula that will be used in regression analysis
+
+Tdata.train <- data.model[1:(nrow(data.model)-100),]
+Tdata.eval <- data.model[(nrow(data.model)-99):nrow(data.model),]
+Tform <- as.formula('Close ~ .') 
+
+```
+
+##How Predictions Will be Evaluated. 
+##We will build the Prediction Models using Multivariate Adaptive Regression Splines (MARS), Artificial Neural Networks (ANN) and Support Vector Machine (SVM). We will select the best model for each stock using performanceEvaluation package and run forecasts for future closing price of the stock using the selected model.
+
+##MARS
+```{r MARS Implementation, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+e <- earth(Tform, Tdata.train)
+e.preds <- predict(e, Tdata.eval) 
+summary(e)
+```
+
+##ANN
+```{r ANN Implementation, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+#use package nnet
+#use scale() function to standardize the trainining and evaluation data sets so that all variables have a mean value of zero and a standard deviation of one. 
+set.seed(1234)
+norm.data.train <- data.frame(Cl.dat=Tdata.train[[1]],scale(Tdata.train[,-1]))
+norm.data.eval<-data.frame(Cl.dat=Tdata.eval[[1]], scale(Tdata.eval[,-1]))
+nn <- nnet(Tform, norm.data.train, size = 5, decay = 0.01, 
+           maxit = 1000, linout = TRUE, trace = FALSE)
+nn.preds <- predict(nn, norm.data.eval) 
+summary(nn.preds)
+```
+
+##SVM
+```{r SVM Implementation, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+#Regression Task
+set.seed(1234)
+sv <- svm(Tform, Tdata.train, gamma = 0.001, cost = 100) 
+s.preds <- predict(sv, Tdata.eval)
+summary(s.preds)
+```
+
+##Model Selection
+##We use performanceEstimation function with absolute metrics as estimation tasks: mean absolute error (mae), mean squared error (mse) and root mean squared error (rmse),using the MonteCarlo simulation method.
+
+```{r Model Performance Estimation, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+mc.res <- performanceEstimation(
+  PredTask(Tform,Tdata.train, ticker),
+  c(workflowVariants("timeseriesWF",
+                     learner="svm",
+                     learner.pars=list(cost=1:5,
+                                       gamma=c(0.1,0.05)
+                                       )
+                     ),
+    workflowVariants("timeseriesWF",
+                     learner="earth",
+                     learner.pars=list(nk=c(10,17),
+                                       degree=1,
+                                       thresh=0.01)
+                     ),
+    workflowVariants("timeseriesWF",
+                     learner="nnet",
+                     learner.pars=list(size=c(5,10),
+                                       decay=c(0.01,0.02),
+                                       maxit=c(1000,1500),
+                                       linout=TRUE,trace=FALSE)
+                     )
+  ),
+  EstimationTask(metrics=c("mae","mse", "rmse"),
+                 method=MonteCarlo(nReps=5,szTrain=0.5,szTest=0.25)))
+```
+
+
+##Based on our performance estimation experiment, the MARS model shows the lowest margins of error for the Closing stock price.
+##However, after predicting the next 5 days with a MARS model implementation, the results were inconclusive. Therefore, we will only select between ANN and SVM models.
+```{r Plot Model Performance Estimation Results, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+ topPerformers(mc.res)
+ plot(mc.res)
+
+```
+
+##We rank the various iterations of all the models using the MAE, MSE, and RMSE tests to determine the best iteration.
+```{r Compare Model Performance Estimation Results by Test Metrics, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+ 
+ rankWorkflows(mc.res)
+ 
+```
+
+##We obtain the parameters of the best model and iteration.
+```{r Determine Best Model Parameters, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+ ## ----size="scriptsize",tidy=FALSE,message=FALSE,warning=FALSE------------
+getWorkflow("nnet.v4",mc.res)
+
+## ----size="tiny",tidy=FALSE----------------------------------------------
+summary(subset(mc.res, workflows="nnet.v4"))
+
+```
+
+##We run the best model and its respective parameters for the best iteration for each given stock.
+```{r Apply Best Model, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+
+if (ticker == "AAPL") { #nnet.v1
+            best.model <- nnet(Tform,
+                               data=Tdata.train, 
+                               size = 5, 
+                               decay = 0.01, 
+                               maxit = 1000, 
+                               linout = TRUE, 
+                               trace = FALSE)
+            #earth.v1 was originally applied
+            #best.model <- earth(Tform, Tdata.train, nk=10, degree=1, thresh=0.01)
+            
+} else if (ticker == "MSFT") { #nnet.v6
+            best.model <- nnet(Tform,
+                               data=Tdata.train, 
+                               size = 10, 
+                               decay = 0.01, 
+                               maxit = 1500, 
+                               linout = TRUE, 
+                               trace = FALSE)
+            #earth.v1 was originally applied
+            #best.model <- earth(Tform, Tdata.train, nk=10, degree=1, thresh=0.01)
+            
+} else if (ticker == "FB") { #nnet.v1
+            best.model <- nnet(Tform,
+                               data=Tdata.train, 
+                               size = 5, 
+                               decay = 0.01, 
+                               maxit = 1000, 
+                               linout = TRUE, 
+                               trace = FALSE)
+            #earth.v7 was originally applied
+            #best.model <- earth(Tform, Tdata.train, nk=10, degree=2, thresh=0.001)
+            
+} else if (ticker == "GS") { ##nnet.v4
+             best.model <-nnet(Tform,
+                                data=Tdata.train, 
+                                size = 10, 
+                                decay = 0.02, 
+                                maxit = 1000, 
+                                linout = TRUE, 
+                                trace = FALSE)
+            #earth.v1 was originally applied
+            #best.model <- earth(Tform, Tdata.train, nk=10, degree=1, thresh=0.01)
+            
+
+            
+} else  { #GOOGL #svm.v10
+            best.model <- svm(Tform, 
+                              Tdata.train, 
+                              cost=5, 
+                              gamma=0.05)
+            #earth.v1 was originally applied
+            #best.model <- earth(Tform, Tdata.train, nk=10, degree=1, thresh=0.01)
+
+ }
+```
+
+##We obtain a prediction for the next 5 days using the specified model variables.
+```{r Obtain Prediction, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+
+days.pred <- 1:5
+
+if (ticker == "AAPL") { 
+  model.pred <- predict(best.model,newdata=data.frame(
+                      EMA.Delt = days.pred,
+                      RSI = days.pred,
+                      mySAR = days.pred,
+                      runMean = days.pred,
+                      Close = days.pred))
+  
+} else if (ticker == "MSFT") {
+  model.pred <- predict(best.model,newdata=data.frame(
+                      EMA.Delt = days.pred,
+                      RSI = days.pred,
+                      mySAR = days.pred,
+                      runMean = days.pred,
+                      Close = days.pred))
+  
+} else if (ticker == "FB") {
+  model.pred <- predict(best.model,newdata=data.frame(
+                      EMA.Delt = days.pred,
+                      myEMV = days.pred,
+                      myMACD = days.pred,
+                      RSI = days.pred,
+                      mySAR = days.pred,
+                      runMean = days.pred,
+                      Close = days.pred))
+  
+} else if (ticker == "GS") {
+  model.pred <- predict(best.model,newdata=data.frame(
+                      EMA.Delt = days.pred,
+                      myEMV = days.pred,
+                      myVolat = days.pred,
+                      myMACD = days.pred,
+                      RSI = days.pred,
+                      mySAR = days.pred,
+                      runMean = days.pred,
+                      Close = days.pred))
+  
+} else { #GOOGL
+  model.pred <- predict(best.model,newdata=data.frame(
+                      EMA.Delt = days.pred,
+                      myMACD = days.pred,
+                      RSI = days.pred,
+                      mySAR = days.pred,
+                      runMean = days.pred,
+                      Close = days.pred))
+  
+}
+
+plot(model.pred)
+
+
+```
+
+##We map our prediction to the next 5 business days of the NYSE calendar.
+```{r Set Prediction Dates, echo=TRUE, eval=TRUE, results=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+dates <- seq(from=as.Date(Sys.Date()+1), to=as.Date(Sys.Date()+10), by=1)
+bizdates <- isBusinessDay("UnitedStates/NYSE", dates) 
+bizdates.df <- data.frame(dates,bizdates)
+pred.dates.df<-subset(bizdates.df, bizdates.df$bizdates=="TRUE")
+dates.pred <- pred.dates.df[1:5,1]
+
+model.pred <- as.data.frame(model.pred)
+
+next5days.pred <- as.data.frame(dates.pred)
+next5days.pred$stock.price <- model.pred[,1]
+next5days.pred
+
+```
+
+##In order to provide flexibility to a user to select multiple prediction models with their desired stock, we did not output the "best" iteration and model from the performance estimation analysis into our Shiny App.  
+
